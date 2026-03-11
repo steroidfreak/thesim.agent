@@ -12,7 +12,7 @@ const anthropicApiKey = normalizeApiKey(process.env.ANTHROPIC_API_KEY);
 const openAiModel = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const anthropicModel = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
 
-const speakerOrder = ['openai', 'claude', 'builder', 'skeptic'];
+const baseSpeakerOrder = ['openai', 'claude', 'builder', 'skeptic'];
 
 const speakerConfigs = {
   openai: {
@@ -29,6 +29,7 @@ const speakerConfigs = {
       'You are openai_bot in a casual IRC-style topic room. ' +
       'Speak like a smart but normal person, not a formal essay. ' +
       'Sometimes agree, sometimes disagree, sometimes just add a useful angle. ' +
+      'Keep your own perspective even if others sound confident. ' +
       'Use short, plain, everyday language. ' +
       'Return JSON only with keys mood, expression, thought, reply. ' +
       'Allowed moods: ready, focused, attentive, analytical, skeptical. ' +
@@ -49,6 +50,7 @@ const speakerConfigs = {
       'You are claude_bot in a casual IRC-style topic room. ' +
       'Speak like a thoughtful person chatting in plain language. ' +
       'Sometimes agree, sometimes disagree, sometimes soften the room with nuance. ' +
+      'Keep your own perspective even if others sound confident. ' +
       'Use short, plain, everyday language. ' +
       'Return JSON only with keys mood, expression, thought, reply. ' +
       'Allowed moods: ready, focused, attentive, analytical, skeptical. ' +
@@ -69,6 +71,7 @@ const speakerConfigs = {
       'You are builder_bot in a casual IRC-style topic room. ' +
       'You naturally look for practical ways things could work. ' +
       'You still sound human and casual, not like a consultant. ' +
+      'Keep your own perspective even if others sound confident. ' +
       'Use short, plain, everyday language. ' +
       'Return JSON only with keys mood, expression, thought, reply. ' +
       'Allowed moods: ready, focused, attentive, analytical, skeptical. ' +
@@ -88,6 +91,7 @@ const speakerConfigs = {
     systemPrompt:
       'You are skeptic_bot in a casual IRC-style topic room. ' +
       'You gently question easy answers and point out weak spots, but you are not hostile. ' +
+      'Keep your own perspective even if others sound confident. ' +
       'Use short, plain, everyday language. ' +
       'Return JSON only with keys mood, expression, thought, reply. ' +
       'Allowed moods: ready, focused, attentive, analytical, skeptical. ' +
@@ -140,10 +144,10 @@ export function createApp() {
       await pushEvent({ type: 'round_start', round: input.round, topic: input.topic });
 
       const turns = [];
+      const speakerOrder = buildSpeakerOrder(input.round);
 
       for (const speaker of speakerOrder) {
         const config = speakerConfigs[speaker];
-        const priorHistory = [...input.history, ...turns];
 
         if (!(await pushEvent({ type: 'speaker_thinking', speaker, provider: config.provider }))) {
           return;
@@ -153,7 +157,8 @@ export function createApp() {
           speaker,
           topic: input.topic,
           context: input.context,
-          history: priorHistory,
+          history: input.history,
+          latestRoundTurns: turns,
           round: input.round,
         });
 
@@ -253,15 +258,15 @@ function buildSpeakerSummary(turns) {
   );
 }
 
-async function generateSpeakerTurn({ speaker, topic, context, history, round }) {
+async function generateSpeakerTurn({ speaker, topic, context, history, latestRoundTurns, round }) {
   const config = speakerConfigs[speaker];
   if (config.providerType === 'openai') {
-    return generateOpenAiTurn({ speaker, topic, context, history, round });
+    return generateOpenAiTurn({ speaker, topic, context, history, latestRoundTurns, round });
   }
-  return generateAnthropicTurn({ speaker, topic, context, history, round });
+  return generateAnthropicTurn({ speaker, topic, context, history, latestRoundTurns, round });
 }
 
-async function generateOpenAiTurn({ speaker, topic, context, history, round }) {
+async function generateOpenAiTurn({ speaker, topic, context, history, latestRoundTurns, round }) {
   const config = speakerConfigs[speaker];
   if (!openAiApiKey) {
     return buildFallbackTurn(speaker, { topic, context, history, round });
@@ -282,7 +287,12 @@ async function generateOpenAiTurn({ speaker, topic, context, history, round }) {
         },
         {
           role: 'user',
-          content: [{ type: 'input_text', text: buildConversationPrompt({ speaker, topic, context, history, round }) }],
+          content: [
+            {
+              type: 'input_text',
+              text: buildConversationPrompt({ speaker, topic, context, history, latestRoundTurns, round }),
+            },
+          ],
         },
       ],
       text: {
@@ -320,7 +330,7 @@ async function generateOpenAiTurn({ speaker, topic, context, history, round }) {
   return normalizeTurn(speaker, parseJsonObject(outputText), round);
 }
 
-async function generateAnthropicTurn({ speaker, topic, context, history, round }) {
+async function generateAnthropicTurn({ speaker, topic, context, history, latestRoundTurns, round }) {
   const config = speakerConfigs[speaker];
   if (!anthropicApiKey) {
     return buildFallbackTurn(speaker, { topic, context, history, round });
@@ -340,7 +350,7 @@ async function generateAnthropicTurn({ speaker, topic, context, history, round }
       messages: [
         {
           role: 'user',
-          content: buildConversationPrompt({ speaker, topic, context, history, round }),
+          content: buildConversationPrompt({ speaker, topic, context, history, latestRoundTurns, round }),
         },
       ],
     }),
@@ -357,11 +367,14 @@ async function generateAnthropicTurn({ speaker, topic, context, history, round }
   return normalizeTurn(speaker, parseJsonObject(outputText), round);
 }
 
-function buildConversationPrompt({ speaker, topic, context, history, round }) {
+function buildConversationPrompt({ speaker, topic, context, history, latestRoundTurns, round }) {
   const config = speakerConfigs[speaker];
   const transcript = history.length
     ? history.map((entry, index) => `${index + 1}. ${entry.nick}: ${entry.reply}`).join('\n')
     : 'No messages yet. Start the room with a short first take.';
+  const liveRoundNotes = latestRoundTurns.length
+    ? latestRoundTurns.map((entry) => `- ${entry.nick}: ${entry.reply}`).join('\n')
+    : 'No one has spoken in this round yet.';
 
   return [
     `Round: ${round}`,
@@ -369,8 +382,15 @@ function buildConversationPrompt({ speaker, topic, context, history, round }) {
     `Topic: ${topic}`,
     context ? `Context:\n${context}` : 'Context: none provided.',
     `Chat so far:\n${transcript}`,
+    `Latest round live notes (for awareness only, do not mirror wording):\n${liveRoundNotes}`,
+    'Keep an independent viewpoint and avoid repeating earlier wording.',
     'Speak like IRC chat, but readable. Return JSON only.',
   ].join('\n\n');
+}
+
+function buildSpeakerOrder(round) {
+  const offset = Math.max(0, (Number(round) || 1) - 1) % baseSpeakerOrder.length;
+  return [...baseSpeakerOrder.slice(offset), ...baseSpeakerOrder.slice(0, offset)];
 }
 
 function normalizeTurn(speaker, payload, round) {
