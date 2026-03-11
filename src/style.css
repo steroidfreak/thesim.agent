@@ -45,12 +45,23 @@ textarea {
   position: fixed;
   inset: 0;
   display: grid;
-  grid-template-columns: minmax(320px, 380px);
-  grid-template-rows: auto auto 1fr;
+  grid-template-columns: minmax(300px, 360px) minmax(420px, 1fr);
+  grid-template-rows: auto 1fr auto;
   align-content: start;
   gap: 16px;
   padding: 18px;
   pointer-events: none;
+}
+
+.control-panel {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.news-panel {
+  grid-column: 1;
+  grid-row: 2;
+  align-self: start;
 }
 
 .panel {
@@ -64,10 +75,13 @@ textarea {
 }
 
 .transcript-panel {
-  grid-column: 1;
+  grid-column: 2;
+  grid-row: 3;
   align-self: end;
-  min-height: 250px;
-  max-height: min(34vh, 360px);
+  justify-self: center;
+  width: min(100%, 980px);
+  min-height: 190px;
+  max-height: min(25vh, 270px);
   display: grid;
   grid-template-rows: auto 1fr;
   background: rgba(7, 12, 22, 0.92);
@@ -250,7 +264,7 @@ button:disabled {
 
 .transcript {
   align-content: start;
-  max-height: min(24vh, 280px);
+  max-height: min(17vh, 180px);
   padding-right: 12px;
 }
 
