@@ -369,6 +369,10 @@ async function generateAnthropicTurn({ speaker, topic, context, history, latestR
 
 function buildConversationPrompt({ speaker, topic, context, history, latestRoundTurns, round }) {
   const config = speakerConfigs[speaker];
+  const prefersChinese = detectChinesePreference({ topic, context, history, latestRoundTurns });
+  const languageInstruction = prefersChinese
+    ? 'The user is speaking Chinese. Write thought and reply in natural Simplified Chinese.'
+    : 'Write thought and reply in plain English unless the user asks for another language.';
   const transcript = history.length
     ? history.map((entry, index) => `${index + 1}. ${entry.nick}: ${entry.reply}`).join('\n')
     : 'No messages yet. Start the room with a short first take.';
@@ -381,6 +385,7 @@ function buildConversationPrompt({ speaker, topic, context, history, latestRound
     `You are: ${config.nick}`,
     `Topic: ${topic}`,
     context ? `Context:\n${context}` : 'Context: none provided.',
+    languageInstruction,
     `Chat so far:\n${transcript}`,
     `Latest round live notes (for awareness only, do not mirror wording):\n${liveRoundNotes}`,
     'Keep an independent viewpoint and avoid repeating earlier wording.',
@@ -410,8 +415,41 @@ function normalizeTurn(speaker, payload, round) {
 
 function buildFallbackTurn(speaker, { topic, context, history, round }) {
   const config = speakerConfigs[speaker];
+  const prefersChinese = detectChinesePreference({ topic, context, history });
   const lastReply = history.at(-1)?.reply || '';
   const contextHint = context ? ` ${clampSentence(context, 70)}` : '';
+
+  if (prefersChinese) {
+    const fallbackRepliesZh = {
+      openai:
+        round === 1
+          ? `我对“${topic}”的第一反应是：要看它是否真的能帮到普通人。${contextHint}`
+          : `我理解这个观点。谈到“${topic}”，我还是觉得要看它在日常生活里是否可行。${lastReply ? ` 上一条提到“${clampSentence(lastReply, 36)}”也很关键。` : ''}`,
+      claude:
+        round === 1
+          ? `我部分同意，不过“${topic}”一旦放到真实场景里通常会更复杂。${contextHint}`
+          : `这个点很有道理，但“${topic}”还是很依赖信任和习惯。${lastReply ? ` 我特别在意上一条说的“${clampSentence(lastReply, 34)}”。` : ''}`,
+      builder:
+        round === 1
+          ? `我更关心“${topic}”怎样才能真正落地，而不只是听起来不错。${contextHint}`
+          : `如果认真推进“${topic}”，我想先看到可以执行的版本。${lastReply ? ` 刚才关于“${clampSentence(lastReply, 34)}”这点很可操作。` : ''}`,
+      skeptic:
+        round === 1
+          ? `也许吧，但我觉得像“${topic}”这类事，很多人下结论太快了。${contextHint}`
+          : `我对“${topic}”还是保留意见。${lastReply ? ` 上一条关于“${clampSentence(lastReply, 34)}”听起来不错，但我还是想继续压测。` : ''}`,
+    };
+
+    return normalizeTurn(
+      speaker,
+      {
+        mood: config.defaultState.mood,
+        expression: config.defaultState.expression,
+        thought: '先听清楚，再给出简洁观点。',
+        reply: fallbackRepliesZh[speaker],
+      },
+      round
+    );
+  }
 
   const fallbackReplies = {
     openai:
@@ -442,6 +480,19 @@ function buildFallbackTurn(speaker, { topic, context, history, round }) {
     },
     round
   );
+}
+
+function detectChinesePreference({ topic, context, history = [], latestRoundTurns = [] }) {
+  const sample = [
+    topic,
+    context,
+    ...history.map((entry) => `${entry.reply || ''} ${entry.thought || ''}`),
+    ...latestRoundTurns.map((entry) => `${entry.reply || ''} ${entry.thought || ''}`),
+  ]
+    .join(' ')
+    .trim();
+
+  return /[\u3400-\u9FFF\uF900-\uFAFF]/.test(sample);
 }
 
 async function fetchPublicNews(topic) {
