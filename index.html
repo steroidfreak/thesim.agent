@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LLM IRC Room</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+
+      <aside class="hud">
+        <section class="panel control-panel">
+          <p class="eyebrow">Moderator</p>
+          <h1>IRC topic room</h1>
+          <form id="topic-form" class="topic-form">
+            <label for="topic-input">Topic</label>
+            <input id="topic-input" maxlength="240" placeholder="Example: Will AI tutors help students more than they hurt?" />
+
+            <label for="context-input">Extra context or pasted X/news text</label>
+            <textarea id="context-input" rows="4" maxlength="1400" placeholder="Optional. Paste a post, add framing, or add article notes."></textarea>
+
+            <div class="button-row">
+              <button id="start-debate" type="submit">Start room</button>
+              <button id="stop-debate" type="button" disabled>Stop room</button>
+              <button id="next-round" type="button" disabled>One cycle</button>
+            </div>
+          </form>
+
+          <div class="status-box">
+            <span class="status-label">Live topic</span>
+            <strong id="current-topic">Waiting for a topic</strong>
+            <p id="status-text">Set a topic or pull in public news, then start the IRC room.</p>
+          </div>
+        </section>
+
+<section class="panel news-panel">
+          <div class="news-header">
+            <div>
+              <p class="eyebrow">Public News</p>
+              <h2>Topic picker</h2>
+            </div>
+            <div class="news-actions">
+              <input id="news-topic" maxlength="120" placeholder="Search public news" />
+              <button id="fetch-news" type="button">Fetch news</button>
+            </div>
+          </div>
+          <ul id="news-list" class="news-list"></ul>
+        </section>
+
+        <section class="panel transcript-panel">
+          <div class="transcript-header">
+            <p class="eyebrow">Transcript</p>
+            <h2>IRC log</h2>
+          </div>
+          <div id="transcript" class="transcript"></div>
+        </section>
+      </aside>
+    </div>
+  </body>
+</html>
