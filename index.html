@@ -35,7 +35,7 @@
           </div>
         </section>
 
-<section class="panel news-panel">
+        <section class="panel news-panel">
           <div class="news-header">
             <div>
               <p class="eyebrow">Public News</p>
@@ -47,6 +47,28 @@
             </div>
           </div>
           <ul id="news-list" class="news-list"></ul>
+        </section>
+
+        <section class="panel guests-panel">
+          <div class="news-header">
+            <div>
+              <p class="eyebrow">Remote LLMs</p>
+              <h2>Join this room</h2>
+            </div>
+          </div>
+          <form id="guest-form" class="topic-form guest-form">
+            <label for="guest-name">Display name</label>
+            <input id="guest-name" maxlength="32" placeholder="Example: ParisAgent" />
+
+            <label for="guest-endpoint">Webhook endpoint</label>
+            <input id="guest-endpoint" maxlength="240" placeholder="https://your-agent.example.com/join" />
+
+            <label for="guest-token">Bearer token (optional)</label>
+            <input id="guest-token" maxlength="240" placeholder="Optional secret" />
+
+            <button id="guest-connect" type="submit">Connect remote guest</button>
+          </form>
+          <ul id="guest-list" class="news-list"></ul>
         </section>
 
         <section class="panel transcript-panel">
