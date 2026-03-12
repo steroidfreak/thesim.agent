@@ -13,6 +13,8 @@ const openAiModel = process.env.OPENAI_MODEL || 'gpt-4.1-mini';
 const anthropicModel = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
 
 const baseSpeakerOrder = ['openai', 'claude', 'builder', 'skeptic'];
+const remoteGuests = [];
+const maxRemoteGuests = 4;
 
 const speakerConfigs = {
   openai: {
@@ -116,6 +118,41 @@ export function createApp() {
     }
   });
 
+  app.get('/api/guests', (_req, res) => {
+    res.json({ guests: remoteGuests.map(sanitizeGuestForClient) });
+  });
+
+  app.post('/api/guests', (req, res) => {
+    const guest = normalizeGuestInput(req.body);
+    if (!guest.name || !guest.endpoint) {
+      return res.status(400).json({ error: 'name and endpoint are required' });
+    }
+
+    if (remoteGuests.length >= maxRemoteGuests) {
+      return res.status(400).json({ error: `Only ${maxRemoteGuests} remote guests are allowed for now.` });
+    }
+
+    if (remoteGuests.some((item) => item.endpoint === guest.endpoint || item.name.toLowerCase() === guest.name.toLowerCase())) {
+      return res.status(409).json({ error: 'Guest already connected with same name or endpoint.' });
+    }
+
+    const safeKey = `guest_${Date.now().toString(36)}_${Math.floor(Math.random() * 9_999).toString(36)}`;
+    const connectedGuest = { ...guest, key: safeKey, connectedAt: Date.now() };
+    remoteGuests.push(connectedGuest);
+    res.status(201).json({ guest: sanitizeGuestForClient(connectedGuest) });
+  });
+
+  app.delete('/api/guests/:key', (req, res) => {
+    const key = String(req.params.key ?? '');
+    const index = remoteGuests.findIndex((guest) => guest.key === key);
+    if (index === -1) {
+      return res.status(404).json({ error: 'Guest not found.' });
+    }
+    remoteGuests.splice(index, 1);
+    res.status(204).end();
+  });
+
+
   app.post('/api/debate/stream', async (req, res) => {
     const input = normalizeConversationInput(req.body);
     if (!input.topic) {
@@ -144,12 +181,14 @@ export function createApp() {
       await pushEvent({ type: 'round_start', round: input.round, topic: input.topic });
 
       const turns = [];
-      const speakerOrder = buildSpeakerOrder(input.round);
+      const speakerOrder = buildSpeakerOrder(input.round, remoteGuests);
 
       for (const speaker of speakerOrder) {
-        const config = speakerConfigs[speaker];
+        const guest = remoteGuests.find((item) => item.key === speaker);
+        const config = speakerConfigs[speaker] || { nick: speaker };
+        const provider = guest ? 'Remote LLM' : config.provider;
 
-        if (!(await pushEvent({ type: 'speaker_thinking', speaker, provider: config.provider }))) {
+        if (!(await pushEvent({ type: 'speaker_thinking', speaker, provider }))) {
           return;
         }
 
@@ -243,6 +282,38 @@ function normalizeConversationInput(body) {
   };
 }
 
+function buildSpeakerOrder(round, guests = []) {
+  const order = [...baseSpeakerOrder];
+  if (guests.length) {
+    const offset = Math.max(0, (round - 1) % guests.length);
+    for (let i = 0; i < guests.length; i += 1) {
+      order.push(guests[(i + offset) % guests.length].key);
+    }
+  }
+  return order;
+}
+
+function normalizeGuestInput(body) {
+  const name = String(body?.name ?? '').trim().slice(0, 32);
+  const endpoint = String(body?.endpoint ?? '').trim().slice(0, 240);
+  const token = String(body?.token ?? '').trim().slice(0, 240);
+
+  if (!/^https?:\/\//i.test(endpoint)) {
+    return { name, endpoint: '', token };
+  }
+
+  return { name, endpoint, token };
+}
+
+function sanitizeGuestForClient(guest) {
+  return {
+    key: guest.key,
+    name: guest.name,
+    endpoint: guest.endpoint,
+    connectedAt: guest.connectedAt,
+  };
+}
+
 function buildSpeakerSummary(turns) {
   return Object.fromEntries(
     turns.map((turn) => [
@@ -259,11 +330,72 @@ function buildSpeakerSummary(turns) {
 }
 
 async function generateSpeakerTurn({ speaker, topic, context, history, latestRoundTurns, round }) {
+  const guest = remoteGuests.find((item) => item.key === speaker);
+  if (guest) {
+    return generateRemoteGuestTurn({ guest, topic, context, history, latestRoundTurns, round });
+  }
+
   const config = speakerConfigs[speaker];
   if (config.providerType === 'openai') {
     return generateOpenAiTurn({ speaker, topic, context, history, latestRoundTurns, round });
   }
   return generateAnthropicTurn({ speaker, topic, context, history, latestRoundTurns, round });
+}
+
+async function generateRemoteGuestTurn({ guest, topic, context, history, latestRoundTurns, round }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (guest.token) {
+      headers.Authorization = `Bearer ${guest.token}`;
+    }
+
+    const response = await fetch(guest.endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        type: 'irc_room_turn',
+        guest: { key: guest.key, name: guest.name },
+        topic,
+        context,
+        history: history.slice(-10),
+        latestRoundTurns,
+        round,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Remote guest failed: ${response.status}`);
+    }
+
+    const payload = await response.json();
+    return {
+      speaker: guest.key,
+      nick: guest.name,
+      provider: 'Remote LLM',
+      model: payload.model || 'custom-endpoint',
+      mood: normalizeChoice(payload.mood, ['ready', 'focused', 'attentive', 'analytical', 'skeptical'], 'attentive'),
+      expression: normalizeChoice(payload.expression, ['steady', 'focused', 'considering', 'assertive', 'skeptical', 'upbeat'], 'considering'),
+      thought: clampSentence(payload.thought, 120) || 'joining from another place and reading the room.',
+      reply: clampSentence(payload.reply, 240) || `${guest.name} is online but had no reply.`,
+    };
+  } catch (error) {
+    return {
+      speaker: guest.key,
+      nick: guest.name,
+      provider: 'Remote LLM',
+      model: 'fallback',
+      mood: 'attentive',
+      expression: 'steady',
+      thought: 'connection was shaky, trying a fallback thought.',
+      reply: `${guest.name}: I'm connected remotely, but my endpoint did not answer in time.`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function generateOpenAiTurn({ speaker, topic, context, history, latestRoundTurns, round }) {
@@ -391,11 +523,6 @@ function buildConversationPrompt({ speaker, topic, context, history, latestRound
     'Keep an independent viewpoint and avoid repeating earlier wording.',
     'Speak like IRC chat, but readable. Return JSON only.',
   ].join('\n\n');
-}
-
-function buildSpeakerOrder(round) {
-  const offset = Math.max(0, (Number(round) || 1) - 1) % baseSpeakerOrder.length;
-  return [...baseSpeakerOrder.slice(offset), ...baseSpeakerOrder.slice(0, offset)];
 }
 
 function normalizeTurn(speaker, payload, round) {

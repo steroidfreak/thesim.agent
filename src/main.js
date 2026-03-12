@@ -62,6 +62,11 @@ const nextTurnButton = document.querySelector('#next-round');
 const newsButton = document.querySelector('#fetch-news');
 const newsTopicInput = document.querySelector('#news-topic');
 const newsList = document.querySelector('#news-list');
+const guestForm = document.querySelector('#guest-form');
+const guestNameInput = document.querySelector('#guest-name');
+const guestEndpointInput = document.querySelector('#guest-endpoint');
+const guestTokenInput = document.querySelector('#guest-token');
+const guestList = document.querySelector('#guest-list');
 const transcriptEl = document.querySelector('#transcript');
 const statusEl = document.querySelector('#status-text');
 const currentTopicEl = document.querySelector('#current-topic');
@@ -114,6 +119,7 @@ addLights();
 addSet();
 seedTranscript();
 syncSpeakerPanels();
+loadGuests();
 
 window.addEventListener('resize', onResize);
 topicForm.addEventListener('submit', (event) => {
@@ -123,6 +129,8 @@ topicForm.addEventListener('submit', (event) => {
 stopButton.addEventListener('click', stopLoop);
 nextTurnButton.addEventListener('click', () => runConversationTurn({ reset: false, autoLoop: false }));
 newsButton.addEventListener('click', fetchNews);
+guestForm?.addEventListener('submit', connectGuest);
+guestList?.addEventListener('click', removeGuestFromClick);
 
 function startLoop() {
   roomState.autoLoop = true;
@@ -266,7 +274,8 @@ function handleStreamEvent(event) {
       setStatus(`IRC cycle ${event.round} is live on "${event.topic}".`);
       break;
     case 'speaker_thinking':
-      showThinkingBubble(event.speaker, `${speakerElements[event.speaker].name} is thinking...`);
+      const speakerName = speakerElements[event.speaker]?.name || event.speaker;
+      showThinkingBubble(event.speaker, `${speakerName} is thinking...`);
       break;
     case 'speaker_ready':
       setSpeakerState(event.speaker, {
@@ -292,7 +301,7 @@ function handleStreamEvent(event) {
       });
       clearThinkingBubble(event.speaker);
       showSpeechBubble(event.speaker, event.turn.reply);
-      addTranscriptEntry(event.turn.nick || speakerElements[event.turn.speaker].name, event.turn.reply, event.turn.provider);
+      addTranscriptEntry(event.turn.nick || speakerElements[event.turn.speaker]?.name || event.turn.speaker, event.turn.reply, event.turn.provider);
       break;
     case 'round_complete':
       roomState.history = event.history ?? roomState.history;
@@ -421,23 +430,27 @@ function setSpeakerState(key, { mood, expression, thought, model }) {
   const panel = speakerElements[key];
 
   if (mood) {
-    if (panel.mood) panel.mood.textContent = `Mood: ${mood}`;
-    avatar.state.mood = mood;
+    if (panel?.mood) panel.mood.textContent = `Mood: ${mood}`;
+    if (avatar) avatar.state.mood = mood;
   }
   if (expression) {
-    if (panel.expression) panel.expression.textContent = `Expression: ${expression}`;
-    avatar.state.expression = expression;
-    drawTextPanel(avatar.badge, expressionToBadge(expression));
+    if (panel?.expression) panel.expression.textContent = `Expression: ${expression}`;
+    if (avatar) {
+      avatar.state.expression = expression;
+      drawTextPanel(avatar.badge, expressionToBadge(expression));
+    }
   }
   if (thought) {
-    if (panel.thought) panel.thought.textContent = `Thinking: ${thought}`;
-    avatar.state.thought = thought;
+    if (panel?.thought) panel.thought.textContent = `Thinking: ${thought}`;
+    if (avatar) avatar.state.thought = thought;
   }
   if (model) {
-    if (panel.model) panel.model.textContent = String(model).replaceAll('Â·', '-').replaceAll('·', '-');
+    if (panel?.model) panel.model.textContent = String(model).replaceAll('Â·', '-').replaceAll('·', '-');
   }
 
-  avatar.aura.material.color.set(moodToColor(key, avatar.state.mood));
+  if (avatar) {
+    avatar.aura.material.color.set(moodToColor(key, avatar.state.mood));
+  }
 }
 
 function createAgent(agent) {
@@ -596,22 +609,28 @@ function drawTextPanel(sprite, text) {
 
 function showThinkingBubble(key, text) {
   const avatar = avatars[key];
+  if (!avatar) return;
   avatar.thoughtBubble.visible = true;
   drawTextPanel(avatar.thoughtBubble, clampBubbleText(text, 260));
 }
 
 function clearThinkingBubble(key) {
-  avatars[key].thoughtBubble.visible = false;
+  const avatar = avatars[key];
+  if (!avatar) return;
+  avatar.thoughtBubble.visible = false;
 }
 
 function showSpeechBubble(key, text) {
   const avatar = avatars[key];
+  if (!avatar) return;
   avatar.speechBubble.visible = true;
   drawTextPanel(avatar.speechBubble, clampBubbleText(text, 320));
 }
 
 function hideSpeechBubble(key) {
-  avatars[key].speechBubble.visible = false;
+  const avatar = avatars[key];
+  if (!avatar) return;
+  avatar.speechBubble.visible = false;
 }
 
 function addLights() {
@@ -750,6 +769,99 @@ function animate() {
 
 function setStatus(message) {
   statusEl.textContent = message;
+}
+
+async function loadGuests() {
+  if (!guestList) return;
+  try {
+    const response = await fetch('/api/guests');
+    if (!response.ok) {
+      throw new Error('Guest list failed');
+    }
+    const data = await response.json();
+    renderGuests(data.guests || []);
+  } catch (error) {
+    renderGuests([]);
+  }
+}
+
+async function connectGuest(event) {
+  event.preventDefault();
+  const name = guestNameInput.value.trim();
+  const endpoint = guestEndpointInput.value.trim();
+  const token = guestTokenInput.value.trim();
+  if (!name || !endpoint) {
+    setStatus('Add both a display name and endpoint to connect a remote guest.');
+    return;
+  }
+
+  const connectButton = document.querySelector('#guest-connect');
+  connectButton.disabled = true;
+  try {
+    const response = await fetch('/api/guests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, endpoint, token }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.error || 'Could not connect remote guest.');
+    }
+
+    setStatus(`Remote guest ${name} connected.`);
+    guestNameInput.value = '';
+    guestEndpointInput.value = '';
+    guestTokenInput.value = '';
+    await loadGuests();
+  } catch (error) {
+    setStatus(error.message || 'Could not connect remote guest.');
+  } finally {
+    connectButton.disabled = false;
+  }
+}
+
+async function removeGuestFromClick(event) {
+  const button = event.target.closest('button[data-guest-key]');
+  if (!button) return;
+
+  const key = button.dataset.guestKey;
+  try {
+    const response = await fetch(`/api/guests/${encodeURIComponent(key)}`, { method: 'DELETE' });
+    if (!response.ok) {
+      throw new Error('Could not disconnect guest.');
+    }
+    setStatus('Remote guest disconnected.');
+    await loadGuests();
+  } catch (error) {
+    setStatus('Could not disconnect remote guest.');
+  }
+}
+
+function renderGuests(guests) {
+  if (!guestList) return;
+  guestList.innerHTML = '';
+
+  if (!guests.length) {
+    const item = document.createElement('li');
+    item.className = 'news-empty';
+    item.textContent = 'No remote guests yet. Share your endpoint so others can join.';
+    guestList.appendChild(item);
+    return;
+  }
+
+  for (const guest of guests) {
+    const item = document.createElement('li');
+    item.className = 'news-item';
+    item.innerHTML = `
+      <div class="guest-card">
+        <strong>${escapeHtml(guest.name)}</strong>
+        <p>${escapeHtml(guest.endpoint)}</p>
+        <button type="button" data-guest-key="${escapeHtml(guest.key)}">Disconnect</button>
+      </div>
+    `;
+    guestList.appendChild(item);
+  }
 }
 
 function escapeHtml(value) {
