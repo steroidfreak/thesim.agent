@@ -97,6 +97,31 @@ const camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerH
 camera.position.set(0, 9.6, 15.2);
 camera.lookAt(0, 1.8, 0);
 
+// Camera lerp state
+const camPos = new THREE.Vector3(0, 9.6, 15.2);
+const camPosTarget = new THREE.Vector3(0, 9.6, 15.2);
+const camLook = new THREE.Vector3(0, 1.8, 0);
+const camLookTarget = new THREE.Vector3(0, 1.8, 0);
+const agentXByKey = Object.fromEntries(AGENTS.map((a) => [a.key, a.x]));
+
+function setCameraZoom(speakerKey) {
+  const x = agentXByKey[speakerKey];
+  if (x === undefined) {
+    resetCameraTarget();
+    return;
+  }
+  camPosTarget.set(x * 0.38, 6.0, 10.2);
+  camLookTarget.set(x, 2.7, 0.4);
+}
+
+function resetCameraTarget() {
+  camPosTarget.set(0, 9.6, 15.2);
+  camLookTarget.set(0, 1.8, 0);
+}
+
+// Per-speaker net vote scores for nameLabel display
+const speakerNetScores = {};
+
 const clock = new THREE.Clock();
 const roomState = {
   topic: '',
@@ -143,6 +168,7 @@ function stopLoop() {
   roomState.streamController?.abort();
   roomState.streamController = null;
   setStatus(`IRC room stopped after cycle ${roomState.round}.`);
+  resetCameraTarget();
 }
 
 async function runConversationTurn({ reset, autoLoop }) {
@@ -273,10 +299,12 @@ function handleStreamEvent(event) {
     case 'round_start':
       setStatus(`IRC cycle ${event.round} is live on "${event.topic}".`);
       break;
-    case 'speaker_thinking':
+    case 'speaker_thinking': {
       const speakerName = speakerElements[event.speaker]?.name || event.speaker;
       showThinkingBubble(event.speaker, `${speakerName} is thinking...`);
+      setCameraZoom(event.speaker);
       break;
+    }
     case 'speaker_ready':
       setSpeakerState(event.speaker, {
         mood: event.mood,
@@ -301,7 +329,12 @@ function handleStreamEvent(event) {
       });
       clearThinkingBubble(event.speaker);
       showSpeechBubble(event.speaker, event.turn.reply);
-      addTranscriptEntry(event.turn.nick || speakerElements[event.turn.speaker]?.name || event.turn.speaker, event.turn.reply, event.turn.provider);
+      addTranscriptEntry(
+        event.turn.nick || speakerElements[event.turn.speaker]?.name || event.turn.speaker,
+        event.turn.reply,
+        event.turn.provider,
+        event.turn.speaker,
+      );
       break;
     case 'round_complete':
       roomState.history = event.history ?? roomState.history;
@@ -312,6 +345,7 @@ function handleStreamEvent(event) {
           ? `Cycle ${roomState.round} finished. Keeping the room going.`
           : `Cycle ${roomState.round} finished. Click "More thoughts" for one more pass.`
       );
+      window.setTimeout(resetCameraTarget, 1800);
       break;
     case 'error':
       throw new Error(event.message || 'Stream error');
@@ -384,7 +418,7 @@ function renderNews(items) {
   }
 }
 
-function addTranscriptEntry(speaker, text, provider = '') {
+function addTranscriptEntry(speaker, text, provider = '', speakerKey = '') {
   const timestamp = formatTime(new Date());
   const item = document.createElement('article');
   item.className = 'transcript-entry';
@@ -394,9 +428,53 @@ function addTranscriptEntry(speaker, text, provider = '') {
       <small>${escapeHtml(provider)}</small>
     </header>
     <p>${escapeHtml(text)}</p>
+    ${speakerKey ? `
+    <footer class="vote-bar">
+      <button class="vote-btn vote-up" data-speaker="${escapeHtml(speakerKey)}" title="Good point">👍</button>
+      <span class="vote-score">—</span>
+      <button class="vote-btn vote-down" data-speaker="${escapeHtml(speakerKey)}" title="Weak take">👎</button>
+    </footer>` : ''}
   `;
+  if (speakerKey) {
+    const upBtn = item.querySelector('.vote-up');
+    const downBtn = item.querySelector('.vote-down');
+    const scoreEl = item.querySelector('.vote-score');
+    upBtn.addEventListener('click', () => castVote(speakerKey, 'up', upBtn, downBtn, scoreEl));
+    downBtn.addEventListener('click', () => castVote(speakerKey, 'down', upBtn, downBtn, scoreEl));
+  }
   transcriptEl.appendChild(item);
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+async function castVote(speakerKey, vote, upBtn, downBtn, scoreEl) {
+  upBtn.disabled = true;
+  downBtn.disabled = true;
+  try {
+    const response = await fetch('/api/votes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speaker: speakerKey, vote }),
+    });
+    if (!response.ok) throw new Error('Vote failed');
+    const data = await response.json();
+    const net = data.votes.up - data.votes.down;
+    scoreEl.textContent = net > 0 ? `+${net}` : String(net);
+    scoreEl.className = `vote-score ${net > 0 ? 'vote-score--pos' : net < 0 ? 'vote-score--neg' : ''}`;
+    speakerNetScores[speakerKey] = net;
+    updateNameLabel(speakerKey);
+  } catch {
+    upBtn.disabled = false;
+    downBtn.disabled = false;
+  }
+}
+
+function updateNameLabel(key) {
+  const avatar = avatars[key];
+  const agent = AGENTS.find((a) => a.key === key);
+  if (!avatar || !agent) return;
+  const net = speakerNetScores[key] ?? 0;
+  const scoreText = net > 0 ? ` ▲${net}` : net < 0 ? ` ▼${Math.abs(net)}` : '';
+  drawTextPanel(avatar.nameLabel, `${agent.name}${scoreText}`);
 }
 
 function buildContextText() {
@@ -752,13 +830,20 @@ function onResize() {
 
 function animate() {
   const elapsed = clock.getElapsedTime();
+
+  // Smooth camera zoom
+  camPos.lerp(camPosTarget, 0.05);
+  camLook.lerp(camLookTarget, 0.05);
+  camera.position.copy(camPos);
+  camera.lookAt(camLook);
+
   for (const [index, agent] of AGENTS.entries()) {
     const avatar = avatars[agent.key];
     avatar.body.rotation.z = Math.sin(elapsed * (1.4 + index * 0.1)) * 0.012;
-    avatar.badge.lookAt(camera.position);
-    avatar.nameLabel.lookAt(camera.position);
-    avatar.thoughtBubble.lookAt(camera.position);
-    avatar.speechBubble.lookAt(camera.position);
+    avatar.badge.lookAt(camPos);
+    avatar.nameLabel.lookAt(camPos);
+    avatar.thoughtBubble.lookAt(camPos);
+    avatar.speechBubble.lookAt(camPos);
     avatar.thoughtBubble.position.y = 5.15 + Math.sin(elapsed * 2.2 + index) * 0.05;
     avatar.speechBubble.position.y = 6.75 + Math.cos(elapsed * 1.7 + index) * 0.06;
   }

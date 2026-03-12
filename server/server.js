@@ -15,6 +15,7 @@ const anthropicModel = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514'
 const baseSpeakerOrder = ['openai', 'claude', 'builder', 'skeptic'];
 const remoteGuests = [];
 const maxRemoteGuests = 4;
+const voteStore = {}; // { speakerKey: { up: number, down: number } }
 
 const speakerConfigs = {
   openai: {
@@ -30,7 +31,8 @@ const speakerConfigs = {
     systemPrompt:
       'You are openai_bot in a casual IRC-style topic room. ' +
       'Speak like a smart but normal person, not a formal essay. ' +
-      'Sometimes agree, sometimes disagree, sometimes just add a useful angle. ' +
+      'Always respond to the specific point just made — agree, push back, or add a new angle. ' +
+      'Never repeat or paraphrase the topic title in your reply. ' +
       'Keep your own perspective even if others sound confident. ' +
       'Use short, plain, everyday language. ' +
       'Return JSON only with keys mood, expression, thought, reply. ' +
@@ -51,7 +53,8 @@ const speakerConfigs = {
     systemPrompt:
       'You are claude_bot in a casual IRC-style topic room. ' +
       'Speak like a thoughtful person chatting in plain language. ' +
-      'Sometimes agree, sometimes disagree, sometimes soften the room with nuance. ' +
+      'Always respond to the specific point just made — agree, push back, or add nuance to that point. ' +
+      'Never repeat or paraphrase the topic title in your reply. ' +
       'Keep your own perspective even if others sound confident. ' +
       'Use short, plain, everyday language. ' +
       'Return JSON only with keys mood, expression, thought, reply. ' +
@@ -72,6 +75,8 @@ const speakerConfigs = {
     systemPrompt:
       'You are builder_bot in a casual IRC-style topic room. ' +
       'You naturally look for practical ways things could work. ' +
+      'Always respond to the specific point just made — find the practical angle in that specific point. ' +
+      'Never repeat or paraphrase the topic title in your reply. ' +
       'You still sound human and casual, not like a consultant. ' +
       'Keep your own perspective even if others sound confident. ' +
       'Use short, plain, everyday language. ' +
@@ -93,6 +98,8 @@ const speakerConfigs = {
     systemPrompt:
       'You are skeptic_bot in a casual IRC-style topic room. ' +
       'You gently question easy answers and point out weak spots, but you are not hostile. ' +
+      'Always challenge the specific claim just made — not the topic in general. ' +
+      'Never repeat or paraphrase the topic title in your reply. ' +
       'Keep your own perspective even if others sound confident. ' +
       'Use short, plain, everyday language. ' +
       'Return JSON only with keys mood, expression, thought, reply. ' +
@@ -150,6 +157,23 @@ export function createApp() {
     }
     remoteGuests.splice(index, 1);
     res.status(204).end();
+  });
+
+  app.get('/api/votes', (_req, res) => {
+    res.json({ votes: voteStore });
+  });
+
+  app.post('/api/votes', (req, res) => {
+    const speaker = String(req.body?.speaker ?? '').trim();
+    const vote = String(req.body?.vote ?? '').trim();
+    if (!speaker || !['up', 'down'].includes(vote)) {
+      return res.status(400).json({ error: 'speaker and vote (up|down) are required' });
+    }
+    if (!voteStore[speaker]) {
+      voteStore[speaker] = { up: 0, down: 0 };
+    }
+    voteStore[speaker][vote] += 1;
+    res.json({ speaker, votes: voteStore[speaker] });
   });
 
 
@@ -512,6 +536,8 @@ function buildConversationPrompt({ speaker, topic, context, history, latestRound
     ? latestRoundTurns.map((entry) => `- ${entry.nick}: ${entry.reply}`).join('\n')
     : 'No one has spoken in this round yet.';
 
+  const lastSaid = history.at(-1)?.reply || latestRoundTurns.at(-1)?.reply || '';
+
   return [
     `Round: ${round}`,
     `You are: ${config.nick}`,
@@ -520,9 +546,12 @@ function buildConversationPrompt({ speaker, topic, context, history, latestRound
     languageInstruction,
     `Chat so far:\n${transcript}`,
     `Latest round live notes (for awareness only, do not mirror wording):\n${liveRoundNotes}`,
+    lastSaid ? `The most recent message to react to: "${lastSaid}"` : '',
+    'Your reply MUST engage with the most recent message above — agree, disagree, or add a specific angle to THAT point.',
+    'Never repeat or paraphrase the topic title in your reply.',
     'Keep an independent viewpoint and avoid repeating earlier wording.',
     'Speak like IRC chat, but readable. Return JSON only.',
-  ].join('\n\n');
+  ].filter(Boolean).join('\n\n');
 }
 
 function normalizeTurn(speaker, payload, round) {
@@ -547,23 +576,33 @@ function buildFallbackTurn(speaker, { topic, context, history, round }) {
   const contextHint = context ? ` ${clampSentence(context, 70)}` : '';
 
   if (prefersChinese) {
+    const lastReplySnippetZh = lastReply ? clampSentence(lastReply, 60) : '';
+
     const fallbackRepliesZh = {
       openai:
         round === 1
-          ? `我对“${topic}”的第一反应是：要看它是否真的能帮到普通人。${contextHint}`
-          : `我理解这个观点。谈到“${topic}”，我还是觉得要看它在日常生活里是否可行。${lastReply ? ` 上一条提到“${clampSentence(lastReply, 36)}”也很关键。` : ''}`,
+          ? `第一反应：关键是看谁真正被普通人大规模使用，而不是谁在测试集上跑得好。${contextHint}`
+          : lastReplySnippetZh
+            ? `说得有道理。我补充一点：能在演示之外稳定运行，才算真的可用。`
+            : `最终还是要看真实用户的采用率，不是跑分。`,
       claude:
         round === 1
-          ? `我部分同意，不过“${topic}”一旦放到真实场景里通常会更复杂。${contextHint}`
-          : `这个点很有道理，但“${topic}”还是很依赖信任和习惯。${lastReply ? ` 我特别在意上一条说的“${clampSentence(lastReply, 34)}”。` : ''}`,
+          ? `这件事可能比”谁赢”复杂得多——不同场景需要不同答案。${contextHint}`
+          : lastReplySnippetZh
+            ? `这点有意思。不过现实案例往往会打破简单的判断，细节里藏着很多麻烦。`
+            : `把它定义成竞赛容易让人忽略背后的复杂性。`,
       builder:
         round === 1
-          ? `我更关心“${topic}”怎样才能真正落地，而不只是听起来不错。${contextHint}`
-          : `如果认真推进“${topic}”，我想先看到可以执行的版本。${lastReply ? ` 刚才关于“${clampSentence(lastReply, 34)}”这点很可操作。` : ''}`,
+          ? `实际问题是：哪个六个月后还能让你放心在生产环境用？${contextHint}`
+          : lastReplySnippetZh
+            ? `对，这种事只有真正去做了才知道，文档里看不出来。`
+            : `我想看能撑住真实生产负载的版本，不是演示版本。`,
       skeptic:
         round === 1
-          ? `也许吧，但我觉得像“${topic}”这类事，很多人下结论太快了。${contextHint}`
-          : `我对“${topic}”还是保留意见。${lastReply ? ` 上一条关于“${clampSentence(lastReply, 34)}”听起来不错，但我还是想继续压测。` : ''}`,
+          ? `大家都想要一个清晰的赢家，但这种事很少真的这样收场。${contextHint}`
+          : lastReplySnippetZh
+            ? `听起来合理，但我想先看它经得住边缘情况的考验再说。`
+            : `我还在等一个不预设结论的论点出现。`,
     };
 
     return normalizeTurn(
@@ -578,23 +617,33 @@ function buildFallbackTurn(speaker, { topic, context, history, round }) {
     );
   }
 
+  const lastReplySnippet = lastReply ? clampSentence(lastReply, 60) : '';
+
   const fallbackReplies = {
     openai:
       round === 1
-        ? `My quick take on "${topic}" is that it should be judged by whether it really helps normal people.${contextHint}`
-        : `Yeah, I get that. For "${topic}", I still think the real test is whether it works in everyday life.${lastReply ? ` The last point about "${clampSentence(lastReply, 36)}" matters too.` : ''}`,
+        ? `First take: this really comes down to who actually gets used by everyday people at scale.${contextHint}`
+        : lastReplySnippet
+          ? `That's fair. I'd add that it only sticks if it works reliably outside of demos and test cases.`
+          : `Still think the real test is adoption by normal people, not benchmarks.`,
     claude:
       round === 1
-        ? `I kind of agree, but "${topic}" feels more complicated once real people are involved.${contextHint}`
-        : `Fair point, but "${topic}" still depends a lot on trust and habits.${lastReply ? ` What stayed with me was "${clampSentence(lastReply, 34)}".` : ''}`,
+        ? `Probably more complicated than one winner — context and use case matter a lot here.${contextHint}`
+        : lastReplySnippet
+          ? `Good point. Though I'd push back slightly — the messy real-world cases are usually what breaks the simple narrative.`
+          : `The nuance gets lost when we frame it as a race. Different needs, different answers.`,
     builder:
       round === 1
-        ? `I keep asking what would make "${topic}" actually usable, not just interesting on paper.${contextHint}`
-        : `If we are serious about "${topic}", I want to know what the practical version looks like.${lastReply ? ` The part about "${clampSentence(lastReply, 34)}" feels actionable.` : ''}`,
+        ? `The practical question is: which one can you actually ship with and not regret in six months?${contextHint}`
+        : lastReplySnippet
+          ? `Right, and that's exactly the kind of thing you learn by building — not by reading the docs.`
+          : `I want to see the version that holds up under real production load, not the demo version.`,
     skeptic:
       round === 1
-        ? `Maybe, but I think people rush topics like "${topic}" before the rough edges are clear.${contextHint}`
-        : `I am still not fully sold on "${topic}".${lastReply ? ` The last message about "${clampSentence(lastReply, 34)}" sounds good, but I would still pressure-test it.` : ''}`,
+        ? `Everyone wants a clean winner, but these things rarely resolve that way.${contextHint}`
+        : lastReplySnippet
+          ? `That sounds reasonable, but I'd want to see it hold up before calling it. The exceptions always show up later.`
+          : `I'm still waiting for the argument that doesn't quietly assume its own conclusion.`,
   };
 
   return normalizeTurn(

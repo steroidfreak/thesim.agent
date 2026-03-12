@@ -326,6 +326,48 @@ button:disabled {
   background: rgba(255, 111, 111, 0.14);
   border-color: rgba(255, 111, 111, 0.34);
 }
+
+.vote-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.vote-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(191, 210, 255, 0.14);
+  border-radius: 10px;
+  padding: 3px 10px;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.vote-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.vote-btn:disabled {
+  opacity: 0.35;
+}
+
+.vote-score {
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  min-width: 28px;
+  text-align: center;
+}
+
+.vote-score--pos {
+  color: #5fe3b1;
+}
+
+.vote-score--neg {
+  color: #ff8080;
+}
 @media (max-width: 1100px) {
   body {
     overflow: auto;
